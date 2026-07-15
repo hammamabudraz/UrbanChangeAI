@@ -1,0 +1,124 @@
+"""
+UrbanChangeAI: Advanced Automated Unit Testing Suite.
+Leverages pytest and unittest.mock to rigorously validate core modules and avoid regressions.
+"""
+
+import os
+import pytest
+import numpy as np
+import pandas as pd
+from unittest.mock import MagicMock, patch
+
+# استيراد موديولات وأصناف المكتبة المخصصة للاختبار
+from urbanchangeai.config import Config
+from urbanchangeai.downloader import DataDownloader
+from urbanchangeai.preprocessing import Preprocessor
+from urbanchangeai.indices import IndexCalculator
+from urbanchangeai.classification import UrbanClassifier
+from urbanchangeai.accuracy import AccuracyEvaluator
+from urbanchangeai.change_detection import ChangeDetector
+
+# --- 1. إعداد الـ Fixtures البرمجية لتجهيز بيئة الاختبار (Test Environment Setup) ---
+
+@pytest.fixture
+def mock_config():
+    """Provides a fresh instance of library configurations optimized for rapid testing."""
+    return Config({
+        "cloud_cover_threshold": 10.0,
+        "ml_algorithm": "xgboost",
+        "spatial_resolution": 30
+    })
+
+@pytest.fixture
+def sample_roi():
+    """Creates a mock geometric bounding target acting as a GEE FeatureCollection ROI."""
+    mock_fc = MagicMock()
+    mock_fc.size.return_value.getInfo.return_value = 1
+    return mock_fc
+
+@pytest.fixture
+def mock_ee_image():
+    """Generates a thoroughly mocked ee.Image object equipped with standard band names."""
+    mock_img = MagicMock()
+    mock_img.bandNames.return_value.getInfo.return_value = ["BLUE", "GREEN", "RED", "NIR", "SWIR1", "SWIR2"]
+    mock_img.select.return_value = mock_img
+    mock_img.normalizedDifference.return_value = mock_img
+    mock_img.expression.return_value = mock_img
+    mock_img.updateMask.return_value = mock_img
+    mock_img.addBands.return_value = mock_img
+    mock_img.clip.return_value = mock_img
+    return mock_img
+
+
+# --- 2. كتابة دوال فحص جودة الموديولات (Unit Tests) ---
+
+def test_config_engine_overrides(mock_config):
+    """Validates that the central config system registers modifications seamlessly."""
+    assert mock_config.get("cloud_cover_threshold") == 10.0
+    assert mock_config.get("spatial_resolution") == 30
+    
+    mock_config.set("ml_algorithm", "pytorch")
+    assert mock_config.get("ml_algorithm") == "pytorch"
+
+def test_preprocessing_spectral_scaling(mock_config, mock_ee_image):
+    """Verifies that the preprocessor cleanly targets core bands and scales data correctly."""
+    raw_input = {2023: mock_ee_image}
+    preprocessor = Preprocessor(raw_data=raw_input, config=mock_config)
+    
+    processed_output = preprocessor.process()
+    
+    assert 2023 in processed_output
+    assert mock_ee_image.updateMask.called
+    assert mock_ee_image.multiply.called
+
+def test_index_calculator_plugin_loop(mock_config, mock_ee_image):
+    """Tests the architecture of the index compiler to verify framework scalability."""
+    processed_input = {2023: mock_ee_image}
+    calculator = IndexCalculator(processed_data=processed_input, config=mock_config)
+    
+    calculator.target_indices = ["NDVI", "NDBI", "LST"]
+    indexed_output = calculator.compute_spectral_indices()
+    
+    assert 2023 in indexed_output
+    assert mock_ee_image.addBands.called
+
+def test_accuracy_evaluator_diagnostics(mock_config):
+    """Ensures structural computation of Confusion Matrix, Kappa, and multi-class diagnostics."""
+    mock_pred_map = np.array([[1, 2], [3, 4]], dtype=np.int8)
+    classified_maps = {2023: mock_pred_map}
+    
+    feature_metadata = {
+        2023: {
+            "x_train": np.random.rand(10, 6).astype(np.float32),
+            "y_train": np.array([0, 1, 2, 3, 0, 1, 2, 3, 0, 1], dtype=np.int64),
+            "band_names": ["BLUE", "GREEN", "RED", "NIR", "SWIR1", "SWIR2"]
+        }
+    }
+    
+    evaluator = AccuracyEvaluator(classified_maps, feature_metadata, config=mock_config)
+    results = evaluator.evaluate()
+    
+    assert 2023 in results
+    assert "overall_accuracy" in results
+    assert "kappa_coefficient" in results
+    assert isinstance(results["confusion_matrix_df"], pd.DataFrame)
+    assert 0.0 <= results["overall_accuracy"] <= 1.0
+
+def test_change_detector_transition_logic(mock_config):
+    """Validates multi-temporal grid cell matrix calculations and spatial sprawl masking."""
+    map_t1 = np.array([[4, 4], [4, 4]], dtype=np.int8)
+    map_t2 = np.array([[1, 4], [4, 4]], dtype=np.int8)
+    
+    classified_maps = {2023: map_t1, 2026: map_t2}
+    
+    detector = ChangeDetector(classified_maps, config=mock_config)
+    change_report = detector.detect_dynamics()
+    
+    assert "intervals" in change_report
+    assert "2023_2026" in change_report["intervals"]
+    
+    interval_data = change_report["intervals"]["2023_2026"]
+    assert isinstance(interval_data["transition_matrix_df"], pd.DataFrame)
+    
+    spatial_change = interval_data["spatial_change_raster"]
+    assert spatial_change[0, 0] == 1

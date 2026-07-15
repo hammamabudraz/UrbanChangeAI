@@ -1,0 +1,41 @@
+"""
+UrbanChangeAI: Utility Framework and Core Logger Setup.
+Provides system-wide logging formatting and text validation mechanics.
+"""
+
+import os
+import logging
+import sys
+
+def setup_logger(name: str = "UrbanChangeAI") -> logging.Logger:
+    """
+    Configures an enterprise-grade hierarchical logging engine 
+    with standard stream formatting for terminal tracking.
+    """
+    logger = logging.getLogger(name)
+    
+    # منع تكرار إضافة الـ Handlers في حال تم استدعاء الدالة أكثر من مرة
+    if logger.hasHandlers():
+        return logger
+        
+    logger.setLevel(logging.INFO)
+    
+    # صياغة التنسيق الرسمي للمخرجات يتضمن الوقت، مستوى الحدث، والرسالة
+    formatter = logging.Formatter(
+        fmt="[%(asctime)s] [%(levelname)s] [%(name)s] : %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    
+    # مخرج الـ Terminal (Console Handler)
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    
+    return logger
+
+def sanitize_filename(name: str) -> str:
+    """
+    Validates and cleans input strings to ensure safe, cross-platform operating system paths.
+    """
+    safe_name = "".join(c for c in name if c.isalnum() or c in ('_', '-')).rstrip()
+    return safe_name if safe_name else "workspace_target"

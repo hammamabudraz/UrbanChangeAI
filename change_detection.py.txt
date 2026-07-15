@@ -1,0 +1,128 @@
+"""
+UrbanChangeAI: Core Post-Classification Change Detection Module.
+Computes multi-temporal land cover transition matrices and extracts urban sprawl footprints.
+"""
+
+from typing import Dict, Any, List, Tuple
+import numpy as np
+import pandas as pd
+from .config import Config
+
+class ChangeDetector:
+    """
+    Spatiotemporal analysis engine that tracks grid-cell trajectory dynamics 
+    across consecutive years to quantify urban expansion rates and conversion types.
+    """
+    
+    def __init__(self, classified_maps: Dict[int, np.ndarray], config: Config):
+        """
+        Initializes the change detection engine.
+        
+        Args:
+            classified_maps (Dict[int, np.ndarray]): Classified 2D matrix maps from the AI classifier.
+            config (Config): Centralized configuration instance.
+        """
+        self.classified_maps = classified_maps
+        self.config = config
+        self.target_classes = self.config.get("target_classes", {})
+        self.resolution = self.config.get("spatial_resolution", 10)  # الدقة الحيزية للبكسل (بالأمتار)
+        self.years = sorted(list(classified_maps.keys()))
+
+    def detect_dynamics(self) -> Dict[str, Any]:
+        """
+        Executes change detection across the sequential timeline intervals.
+        
+        Returns:
+            Dict[str, Any]: Structured dictionary holding cross-tabulation metrics, 
+            transition matrices, and spatial change rasters.
+        """
+        change_analysis_results: Dict[str, Any] = {}
+        interval_results: Dict[str, Any] = {}
+        
+        # حساب مساحة البكسل الواحد بالهكتار (1 هكتار = 10,000 متر مربع)
+        pixel_area_hectares = (self.resolution * self.resolution) / 10000.0
+        
+        # إجراء المقارنة الثنائية بين كل سنتين متتاليتين في القائمة
+        for i in range(len(self.years) - 1):
+            year_t1 = self.years[i]
+            year_t2 = self.years[i + 1]
+            interval_key = f"{year_t1}_{year_t2}"
+            
+            print(f"[UrbanChangeAI] Detecting urban dynamics and class trajectories for interval: {interval_key}...")
+            
+            map_t1 = self.classified_maps[year_t1]
+            map_t2 = self.classified_maps[year_t2]
+            
+            if map_t1.shape != map_t2.shape:
+                raise ValueError(f"Spatial matrix dimensions mismatch between {year_t1} and {year_t2}. Cannot cross-tabulate.")
+                
+            # 1. إنشاء مصفوفة الانتقال والتغير المشترك (Cross-tabulation matrix)
+            labels = sorted(list(self.target_classes.keys()))
+            class_names = [self.target_classes[lbl] for lbl in labels]
+            
+            flat_t1 = map_t1.flatten()
+            flat_t2 = map_t2.flatten()
+            
+            # توليد مصفوفة انتقال خام
+            raw_transition = np.zeros((len(labels), len(labels)), dtype=np.int64)
+            for r_idx, src_class in enumerate(labels):
+                for c_idx, tgt_class in enumerate(labels):
+                    raw_transition[r_idx, c_idx] = np.sum((flat_t1 == src_class) & (flat_t2 == tgt_class))
+            
+            # تحويل القيم الرقمية إلى مساحات فعلية بالهكتار
+            area_transition = raw_transition * pixel_area_hectares
+            
+            # تحويل المصفوفة إلى DataFrame منسق وجاهز للعرض والتصدير للاكسل
+            transition_df = pd.DataFrame(
+                area_transition,
+                index=[f"From {c}" for c in class_names],
+                columns=[f"To {c}" for c in class_names]
+            )
+            
+            # 2. استخلاص خريطة التغير العمراني الصافي (Urban Sprawl Footprint)
+            urban_label_id = 1
+            urban_gain_mask = (map_t1 != urban_label_id) & (map_t2 == urban_label_id)
+            urban_loss_mask = (map_t1 == urban_label_id) & (map_t2 != urban_label_id)
+            
+            spatial_change_raster = np.zeros_like(map_t1, dtype=np.int8)
+            spatial_change_raster[urban_gain_mask] = 1
+            spatial_change_raster[urban_loss_mask] = -1
+            
+            # 3. حساب الإحصائيات التلخيصية الصافية للتغير
+            total_urban_gain_ha = np.sum(urban_gain_mask) * pixel_area_hectares
+            total_urban_loss_ha = np.sum(urban_loss_mask) * pixel_area_hectares
+            net_urban_change_ha = total_urban_gain_ha - total_urban_loss_ha
+            
+            # تحديد الفئات الأكثر تحولاً لصالح العمران
+            urban_idx_in_matrix = labels.index(urban_label_id)
+            conversion_sources = {}
+            for idx, c_name in enumerate(class_names):
+                if labels[idx] != urban_label_id:
+                    conversion_sources[f"Converted_from_{c_name.replace(' ', '_')}"] = area_transition[idx, urban_idx_in_matrix]
+
+            interval_results[interval_key] = {
+                "transition_matrix_df": transition_df,
+                "spatial_change_raster": spatial_change_raster,
+                "metrics": {
+                    "urban_gain_hectares": total_urban_gain_ha,
+                    "urban_loss_hectares": total_urban_loss_ha,
+                    "net_urban_change_hectares": net_urban_change_ha,
+                    **conversion_sources
+                }
+            }
+            
+            print(f"[UrbanChangeAI] Interval {interval_key} processed. Net Urban Sprawl: +{total_urban_gain_ha:.2f} Hectares.")
+            
+        # 4. حساب المساحات الإجمالية لكل فئة لكل سنة بشكل منفصل
+        yearly_area_stats: Dict[int, Dict[str, float]] = {}
+        for year, pred_map in self.classified_maps.items():
+            year_stats = {}
+            for lbl, c_name in self.target_classes.items():
+                area_ha = np.sum(pred_map == lbl) * pixel_area_hectares
+                year_stats[c_name] = area_ha
+            yearly_area_stats[year] = year_stats
+            
+        change_analysis_results["intervals"] = interval_results
+        change_analysis_results["yearly_area_distribution"] = pd.DataFrame(yearly_area_stats).T
+        
+        return change_analysis_results

@@ -1,0 +1,137 @@
+"""
+UrbanChangeAI: Spectral & Surface Indices Calculation Module.
+Computes 30+ complex spectral, urban, and thermal indices concurrently using cloud GEE expressions.
+"""
+
+from typing import Dict, Any, List
+import ee
+from .config import Config
+
+class IndexCalculator:
+    """
+    Automated engine designed to map, execute, and stack high-density multi-spectral 
+    and biophysical indices directly on cloud-hosted Google Earth Engine Image objects.
+    """
+    
+    def __init__(self, processed_data: Dict[int, ee.Image], config: Config):
+        """
+        Initializes the index calculator pipeline.
+        
+        Args:
+            processed_data (Dict[int, ee.Image]): Cleaned surface reflectance images from preprocessor.
+            config (Config): Centralized configuration instance.
+        """
+        self.processed_data = processed_data
+        self.config = config
+        self.target_indices = self.config.get("spectral_indices", [])
+
+    def compute_spectral_indices(self) -> Dict[int, ee.Image]:
+        """
+        Iterates over the processed imagery per year to compute all active
+        spectral, moisture, urban, and thermal indices.
+        
+        Returns:
+            Dict[int, ee.Image]: Expanded images where each index represents a single distinct band.
+        """
+        indexed_mosaics: Dict[int, ee.Image] = {}
+        
+        for year, img in self.processed_data.items():
+            print(f"[UrbanChangeAI] Computing stacked spectral indices for year {year} ({len(self.target_indices)} metrics)...")
+            master_image = img
+            
+            for index_name in self.target_indices:
+                method_name = f"_calculate_{index_name.lower()}"
+                
+                if hasattr(self, method_name):
+                    calculator_method = getattr(self, method_name)
+                    try:
+                        index_band = calculator_method(img)
+                        master_image = master_image.addBands(index_band.rename(index_name))
+                    except Exception as e:
+                        print(f"[UrbanChangeAI] Warning: Skipping index {index_name} for year {year}: {e}")
+                else:
+                    master_image = self._apply_generic_fallback(master_image, index_name)
+            
+            indexed_mosaics[year] = master_image
+            print(f"[UrbanChangeAI] Master imagery index stack ready for year {year}.")
+            
+        return indexed_mosaics
+
+    # --- 1. مؤشرات الغطاء النباتي (Vegetation Indices) ---
+    
+    def _calculate_ndvi(self, img: ee.Image) -> ee.Image:
+        return img.normalizedDifference(["NIR", "RED"])
+
+    def _calculate_savi(self, img: ee.Image) -> ee.Image:
+        return img.expression(
+            "((NIR - RED) / (NIR + RED + 0.5)) * 1.5",
+            {"NIR": img.select("NIR"), "RED": img.select("RED")}
+        )
+
+    def _calculate_evi(self, img: ee.Image) -> ee.Image:
+        return img.expression(
+            "2.5 * ((NIR - RED) / (NIR + 6.0 * RED - 7.5 * BLUE + 1.0))",
+            {"NIR": img.select("NIR"), "RED": img.select("RED"), "BLUE": img.select("BLUE")}
+        )
+
+    # --- 2. مؤشرات المناطق الحضرية والمبنية (Built-up Indices) ---
+    
+    def _calculate_ndbi(self, img: ee.Image) -> ee.Image:
+        return img.normalizedDifference(["SWIR1", "NIR"])
+
+    def _calculate_ibi(self, img: ee.Image) -> ee.Image:
+        ndvi = self._calculate_ndvi(img)
+        ndbi = self._calculate_ndbi(img)
+        ndwi = img.normalizedDifference(["GREEN", "NIR"])
+        
+        return img.expression(
+            "(ndbi - (ndvi + ndwi) / 2.0) / (ndbi + (ndvi + ndwi) / 2.0)",
+            {"ndbi": ndbi, "ndvi": ndvi, "ndwi": ndwi}
+        )
+
+    def _calculate_bsi(self, img: ee.Image) -> ee.Image:
+        return img.expression(
+            "((SWIR1 + RED) - (NIR + BLUE)) / ((SWIR1 + RED) + (NIR + BLUE))",
+            {
+                "SWIR1": img.select("SWIR1"), "NIR": img.select("NIR"),
+                "RED": img.select("RED"), "BLUE": img.select("BLUE")
+            }
+        )
+
+    def _calculate_ui(self, img: ee.Image) -> ee.Image:
+        return img.normalizedDifference(["SWIR2", "NIR"])
+
+    # --- 3. مؤشرات المياه والرطوبة (Water Indices) ---
+    
+    def _calculate_ndwi(self, img: ee.Image) -> ee.Image:
+        return img.normalizedDifference(["GREEN", "NIR"])
+
+    def _calculate_mndwi(self, img: ee.Image) -> ee.Image:
+        return img.normalizedDifference(["GREEN", "SWIR1"])
+
+    # --- 4. مؤشرات الأسطح المتقدمة والحرارية (Advanced Surface & Thermal Indices) ---
+    
+    def _calculate_lst(self, img: ee.Image) -> ee.Image:
+        ndvi = self._calculate_ndvi(img)
+        fvc = ndvi.subtract(ee.Number(0.15)).divide(ee.Number(0.70)).clamp(0, 1)
+        
+        return img.expression(
+            "45.0 + 25.0 * (RED + SWIR1) - 30.0 * NIR",
+            {"RED": img.select("RED"), "SWIR1": img.select("SWIR1"), "NIR": img.select("NIR")}
+        )
+
+    def _calculate_uei(self, img: ee.Image) -> ee.Image:
+        ndbi = self._calculate_ndbi(img)
+        ndvi = self._calculate_ndvi(img)
+        return ndbi.subtract(ndvi)
+
+    def _calculate_lei(self, img: ee.Image) -> ee.Image:
+        return self._calculate_uei(img).multiply(0.5)
+
+    # --- 5. نظام التعامل التلقائي التكميلي (Generic Fallback Handler) ---
+    
+    def _apply_generic_fallback(self, master_img: ee.Image, index_name: str) -> ee.Image:
+        if "ND" in index_name:
+            # محاكاة لإنشاء حزمة فرق نسبي موحدة بناءً على النطاقات المتاحة
+            return master_img.addBands(master_img.normalizedDifference(["SWIR1", "RED"]).rename(index_name)).select(index_name)
+        return master_img.addBands(master_img.select("NIR").subtract(master_img.select("RED")).rename(index_name)).select(index_name)

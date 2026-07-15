@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "urbanchangeai"
+version = "0.1.0"
+authors = [
+    { name = "Your Name", email = "your.email@example.com" }
+]
+description = "An enterprise-grade AI & GIS library for automated urban change detection using Google Earth Engine"
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence"
+]
+dependencies = [
+    "earthengine-api>=0.1.350",
+    "geopandas>=0.14.0",
+    "rasterio>=1.3.0",
+    "pylandstats>=2.1.0",
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "scikit-learn>=1.3.0",
+    "xgboost>=1.7.0",
+    "torch>=2.0.0",
+    "streamlit>=1.30.0",
+    "plotly>=5.15.0",
+    "folium>=0.15.0",
+    "streamlit-folium>=0.15.0",
+    "reportlab>=4.0.0",
+    "python-docx>=1.0.0",
+    "openpyxl>=3.1.0"
+]
+
+[project.urls]
+"Homepage" = "https://github.com"
+"Bug Tracker" = "https://github.com/issues"

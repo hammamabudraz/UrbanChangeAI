@@ -1,0 +1,117 @@
+"""
+UrbanChangeAI: Satellite Data Downloader Module.
+Queries and fetches remote cloud-mosaic imagery from GEE based on spatial and temporal boundaries.
+"""
+
+from typing import List, Dict, Any, Union
+import ee
+from .config import Config
+
+class DataDownloader:
+    """
+    Handles cloud-based querying, filtering, and compositing of satellite missions
+    (Sentinel-2 and Landsat) directly via Google Earth Engine servers.
+    """
+    
+    def __init__(self, roi: Any, years: List[int], config: Config):
+        """
+        Initializes the downloader engine.
+        
+        Args:
+            roi (Any): The resolved GEE FeatureCollection boundary or local GeoDataFrame.
+            years (List[int]): Sorted list of target years for imagery analysis.
+            config (Config): Centralized configuration instance.
+        """
+        self.roi = roi
+        self.years = years
+        self.config = config
+        
+        # استخراج المعاملات الأساسية من ملف الإعدادات
+        self.cloud_threshold = self.config.get("cloud_cover_threshold", 15.0)
+        self.resolution = self.config.get("spatial_resolution", 10)
+        
+        # إذا كانت حدود المنطقة ممررة كـ GeoPandas محلي، نحولها إلى صيغة GEE
+        if not isinstance(self.roi, (ee.FeatureCollection, ee.Geometry)):
+            self.gee_roi = self._convert_gpd_to_gee(self.roi)
+        else:
+            self.gee_roi = self.roi
+
+    def _convert_gpd_to_gee(self, gpd_df: Any) -> ee.Geometry:
+        """Converts a local GeoPandas GeoDataFrame into a GEE geometry object."""
+        geojson = gpd_df.__geo_interface__
+        features = geojson['features']
+        if not features:
+            raise ValueError("The provided local ROI vector file contains no geometry features.")
+        return ee.Geometry(features[0]['geometry'])
+
+    def fetch_satellite_imagery(self) -> Dict[int, ee.Image]:
+        """
+        Queries and filters satellite collections for each target year, generating 
+        cloud-free median composites clipped exactly to the geometry of the study area.
+        
+        Returns:
+            Dict[int, ee.Image]: A dictionary mapping each year to its respective cloud-free GEE Image.
+        """
+        yearly_mosaics: Dict[int, ee.Image] = {}
+        
+        for year in self.years:
+            print(f"[UrbanChangeAI] Fetching and synthesizing optimal cloud-free composite for year: {year}...")
+            
+            # تحديد النطاق الزمني السنوي (من 1 يناير إلى 31 ديسمبر من نفس السنة)
+            start_date = f"{year}-01-01"
+            end_date = f"{year}-12-31"
+            
+            # استدعاء مجموعة صور Sentinel-2 ذات الكفاءة العالية (Harmonized Sentinel-2 MSI Level-2A)
+            s2_collection = (
+                ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+                .filterBounds(self.gee_roi)
+                .filterDate(start_date, end_date)
+                # فلترة الصور بناءً على نسبة الغيوم الواردة في الميتا-داتا
+                .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", self.cloud_threshold))
+            )
+            
+            # التحقق من توفر صور في هذه الفترة لمنطقة الدراسة
+            try:
+                count = s2_collection.size().getInfo()
+            except Exception:
+                count = 0
+            
+            if count == 0:
+                print(f"[UrbanChangeAI] Warning: No Sentinel-2 images found for {year}. Falling back to Landsat-8/9...")
+                # خطة بديلة (Fallback): استدعاء صور Landsat 8 Surface Reflectance في حال عدم توفر Sentinel-2
+                landsat_collection = (
+                    ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
+                    .filterBounds(self.gee_roi)
+                    .filterDate(start_date, end_date)
+                    .filter(ee.Filter.lt("CLOUD_COVER", self.cloud_threshold))
+                )
+                
+                # دمج الصور واختيار القيمة الوسطية (Median Composite) لتقليل الظلال والغيوم المتبقية
+                composite_image = landsat_collection.median().clip(self.gee_roi)
+                # إعادة تسمية حزم لاندسات لتتوافق مع المسميات الموحدة في نظام الإعدادات
+                composite_image = self._standardize_landsat_bands(composite_image)
+            else:
+                # توليد مركب الصورة الوسطية لـ Sentinel-2 واقتصاصه على حدود منطقة الدراسة تماماً
+                composite_image = s2_collection.median().clip(self.gee_roi)
+                # مواءمة وتسمية النطاقات الطيفية لتطابق النظام الموحد للمكتبة
+                composite_image = self._standardize_sentinel_bands(composite_image)
+                
+            yearly_mosaics[year] = composite_image
+            print(f"[UrbanChangeAI] Successfully generated composite for {year}.")
+            
+        return yearly_mosaics
+
+    def _standardize_sentinel_bands(self, img: ee.Image) -> ee.Image:
+        """Renames Sentinel-2 bands to standard internal library naming schema."""
+        bands_map = self.config.get("bands_sentinel2")
+        src_bands = list(bands_map.values())
+        dst_bands = list(bands_map.keys())
+        return img.select(src_bands, dst_bands)
+
+    def _standardize_landsat_bands(self, img: ee.Image) -> ee.Image:
+        """Maps and renames Landsat-8 spectral bands to match internal library conventions."""
+        landsat_map = {
+            "SR_B2": "BLUE", "SR_B3": "GREEN", "SR_B4": "RED", 
+            "SR_B5": "NIR", "SR_B6": "SWIR1", "SR_B7": "SWIR2"
+        }
+        return img.select(list(landsat_map.keys()), list(landsat_map.values()))
