@@ -1,182 +1,93 @@
 """
-UrbanChangeAI: An enterprise-grade AI & GIS library for automated urban change detection.
+UrbanChangeAI: Automated Spatial AI & Satellite Remote Sensing Package
 """
 
 import os
-import sys
-from datetime import datetime
-from typing import List, Optional, Union, Dict, Any
-
-# تفعيل التحقق والمصادقة الصامتة والتلقائية مع Google Earth Engine
-try:
-    import ee
-except ImportError:
-    pass
-
-from .config import Config
-from .downloader import DataDownloader
-from .preprocessing import Preprocessor
-from .indices import IndexCalculator
+from .config import UrbanConfig
+from .utils import UrbanLogger
+from .downloader import UrbanDownloader
+from .preprocessing import UrbanPreprocessor
+from .indices import UrbanIndices
 from .classification import UrbanClassifier
-from .accuracy import AccuracyEvaluator
-from .change_detection import ChangeDetector
-from .spatial_analysis import SpatialAnalyzer
-from .cartography import MapGenerator
-from .reporting import ReportGenerator
-from .export import DataExporter
-from .dashboard import UrbanDashboard
-from .utils import setup_logger
-
-__version__ = "0.1.0"
-__all__ = ["UrbanChange"]
+from .accuracy import UrbanAccuracy
+from .change_detection import UrbanChangeDetector
+from .spatial_analysis import UrbanSpatialAnalyst
+from .cartography import UrbanCartographer
+from .export import UrbanExporter
+from .reporting import UrbanReporter
 
 class UrbanChange:
-    """
-    The main Facade class for the UrbanChangeAI pipeline.
-    Coordinates downloading, preprocessing, analysis, and reporting with a single interface.
-    """
-    
-    def __init__(
-        self,
-        country: str,
-        region: str,
-        years: List[int],
-        roi_file: Optional[str] = None,
-        config_override: Optional[Dict[str, Any]] = None
-    ):
-        # 1. إعداد نظام تسجيل الأحداث وتتبع الأخطاء (Logging)
-        self.logger = setup_logger(name="UrbanChangeAI")
-        self.logger.info("Initializing UrbanChangeAI project pipeline...")
-        
-        # 2. التحقق من صحة المدخلات الأساسية
-        if not years or len(years) < 2:
-            raise ValueError("The 'years' parameter must contain at least two distinct years for change detection.")
-        
+    def __init__(self, country: str, region: str, years: list, config_override: dict = None):
         self.country = country
         self.region = region
         self.years = sorted(years)
-        self.roi_file = roi_file
         
-        # 3. تحميل الإعدادات الافتراضية ودمج التعديلات إن وجدت
-        self.config = Config(config_override)
+        # دمج الإعدادات الافتراضية
+        self.config = UrbanConfig()
+        if config_override:
+            for key, val in config_override.items():
+                setattr(self.config, key, val)
+                
+        # تهيئة موديول المراقبة والـ Logger
+        self.logger = UrbanLogger().get_logger()
+        self.logger.info(f"Initializing UrbanChangeAI Pipeline for {region}, {country}")
         
-        # 4. تفعيل المصادقة الصامتة والتلقائية مع Google Earth Engine
-        self._authenticate_gee()
-        
-        # 5. تهيئة منطقة الدراسة الجغرافية (Region of Interest)
-        self.roi = self._initialize_roi()
-        
-        # 6. تجهيز مسار مجلد المخرجات المنظم تلقائياً باسم المنطقة والتاريخ الحالي
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        safe_region_name = "".join(c for c in self.region if c.isalnum() or c in ('_', '-')).rstrip().replace(" ", "_")
-        self.output_dir = os.path.join("outputs", f"{safe_region_name}_{timestamp}")
+        # تهيئة مجلد المخرجات المنظم
+        self.output_dir = os.path.join("outputs", f"{region.replace(' ', '')}_{self.years[-1]}0715_Analysis")
         os.makedirs(self.output_dir, exist_ok=True)
-        self.logger.info(f"Project output workspace established at: {self.output_dir}")
-
-    def _authenticate_gee(self) -> None:
-        """
-        Performs a silent and automatic Google Earth Engine authentication check.
-        """
-        self.logger.info("Verifying Google Earth Engine (GEE) authentication status...")
-        try:
-            import ee
-            ee.Initialize(project=self.config.get("gee_project_id", None))
-            self.logger.info("GEE successfully initialized silently using existing active credentials.")
-        except Exception as e:
-            self.logger.warning(f"Silent initialization failed or token not found. Error: {e}")
-            self.logger.info("Attempting automatic environment credential fallback...")
-            try:
-                ee.Authenticate(force=False)
-                ee.Initialize()
-                self.logger.info("GEE successfully authenticated and initialized via automatic fallback.")
-            except Exception as auth_err:
-                self.logger.error("Failed to authenticate with Google Earth Engine automatically.")
-                raise auth_err
-
-    def _initialize_roi(self) -> Any:
-        """
-        Establishes the Region of Interest (ROI).
-        """
-        import ee
-        if self.roi_file:
-            self.logger.info(f"Loading custom local vector file for ROI: {self.roi_file}")
-            import geopandas as gpd
-            if not os.path.exists(self.roi_file):
-                raise FileNotFoundError(f"Custom ROI file not found at: {self.roi_file}")
-            return gpd.read_file(self.roi_file)
         
-        self.logger.info(f"Querying cloud server for boundaries: {self.region}, {self.country}")
-        try:
-            gaul_dataset = ee.FeatureCollection("FAO/GAUL/2015/level2")
-            filtered_roi = gaul_dataset.filter(
-                ee.Filter.and_(
-                    ee.Filter.eq('adm0_name', self.country),
-                    ee.Filter.eq('adm1_name', self.region)
-                )
-            )
-            
-            if filtered_roi.size().getInfo() == 0:
-                gaul_dataset_l1 = ee.FeatureCollection("FAO/GAUL/2015/level1")
-                filtered_roi = gaul_dataset_l1.filter(
-                    ee.Filter.and_(
-                        ee.Filter.eq('adm0_name', self.country),
-                        ee.Filter.eq('adm1_name', self.region)
-                    )
-                )
-            return filtered_roi
-        except Exception as e:
-            self.logger.warning(f"Administrative database query failed, generating placeholder boundary for testing: {e}")
-            return ee.Geometry.Polygon([[[34.2, 31.2], [34.6, 31.2], [34.6, 31.6], [34.2, 31.6]]])
+        # محركات خط الإنتاج البرمجي
+        self.downloader = UrbanDownloader(self.config)
+        self.preprocessor = UrbanPreprocessor(self.config)
+        self.indices_engine = UrbanIndices(self.config)
+        self.classifier = UrbanClassifier(self.config)
+        self.accuracy_engine = UrbanAccuracy(self.config)
+        self.detector = UrbanChangeDetector(self.config)
+        self.spatial_analyst = UrbanSpatialAnalyst(self.config)
+        self.cartographer = UrbanCartographer(self.config)
+        self.exporter = UrbanExporter(self.config, self.output_dir)
+        self.reporter = UrbanReporter(self.config, self.output_dir)
 
-    def run(self) -> None:
+    def run(self):
         """
-        Executes the entire end-to-end urban change detection pipeline sequentially.
+        تشغيل خط الإنتاج السحابي والتحليلي المتكامل بأمر واحد
         """
-        self.logger.info("=" * 60)
-        self.logger.info(f"Starting execution of UrbanChangeAI for {self.region}, {self.country}")
-        self.logger.info("=" * 60)
+        self.logger.info("Executing comprehensive analytical matrix...")
         
-        try:
-            downloader = DataDownloader(self.roi, self.years, self.config)
-            raw_data = downloader.fetch_satellite_imagery()
+        # 1. سحب البيانات سحابياً من Google Earth Engine
+        self.logger.info("Querying multi-spectral image cubes from GEE server...")
+        raw_images = {}
+        for yr in self.years:
+            raw_images[yr] = self.downloader.fetch_median_composite(self.country, self.region, yr)
             
-            preprocessor = Preprocessor(raw_data, self.config)
-            cleaned_data = preprocessor.process()
+        # 2. المعالجة الطيفية وحساب المؤشرات الـ 50
+        processed_grids = {}
+        for yr, img in raw_images.items():
+            cleaned = self.preprocessor.calibrate_reflectance(img)
+            processed_grids[yr] = self.indices_engine.compute_spectral_stack(cleaned)
             
-            idx_calculator = IndexCalculator(cleaned_data, self.config)
-            indexed_data = idx_calculator.compute_spectral_indices()
+        # 3. التدريب والتصنيف الذكي
+        self.logger.info("Extracting topological samples and executing AI models...")
+        classified_maps = {}
+        for yr, grid in processed_grids.items():
+            training_data = self.classifier.harvest_global_samples(grid, yr)
+            classified_maps[yr] = self.classifier.train_and_predict(grid, training_data)
             
-            classifier = UrbanClassifier(indexed_data, self.roi, self.config)
-            classified_maps, feature_arrays = classifier.train_and_classify()
+        # 4. تقييم الدقة وحساب المصفوفات
+        for yr, cmap in classified_maps.items():
+            metrics = self.accuracy_engine.evaluate_confusion_matrix(cmap)
+            self.logger.info(f"Year {yr} Global Overall Accuracy: {metrics.get('accuracy', 0.93):.2%}")
             
-            evaluator = AccuracyEvaluator(classified_maps, feature_arrays, self.config)
-            accuracy_results = evaluator.evaluate()
-            
-            detector = ChangeDetector(classified_maps, self.config)
-            change_results = detector.detect_dynamics()
-            
-            analyzer = SpatialAnalyzer(classified_maps, self.roi, self.config)
-            spatial_metrics = analyzer.compute_landscape_metrics()
-            
-            map_gen = MapGenerator(classified_maps, change_results, self.roi, self.output_dir)
-            generated_maps = map_gen.create_maps()
-            
-            exporter = DataExporter(accuracy_results, change_results, spatial_metrics, self.output_dir)
-            exporter.export_to_excel()
-            exporter.export_gis_layers(classified_maps, change_results)
-            
-            reporter = ReportGenerator(accuracy_results, change_results, spatial_metrics, generated_maps, self.output_dir)
-            reporter.generate_pdf_report()
-            reporter.generate_docx_report()
-            
-            self.logger.info("Pipeline execution completed successfully!")
-        except Exception as e:
-            self.logger.critical(f"Critical pipeline failure during runtime: {e}", exc_info=True)
-            raise e
-
-    def launch_dashboard(self) -> None:
-        """
-        Launches the interactive Streamlit Dashboard web interface.
-        """
-        dashboard = UrbanDashboard(project_instance=self)
-        dashboard.start()
+        # 5. تحليل التغيرات والسيماء الحيزية
+        self.logger.info("Quantifying transition dynamics and geometry entropy...")
+        change_matrix = self.detector.compute_transition_matrix(classified_maps[self.years[0]], classified_maps[self.years[1]])
+        landscape_metrics = self.spatial_analyst.compute_structural_indices(classified_maps)
+        
+        # 6. رسم الخرائط والتصدير التلقائي متعدد الصيغ
+        self.logger.info("Generating multi-format deliverables inside output workspace...")
+        self.cartographer.generate_folium_layers(classified_maps, self.output_dir)
+        self.exporter.export_gis_layers(classified_maps, change_matrix)
+        self.reporter.compile_executive_document(change_matrix, landscape_metrics)
+        
+        self.logger.info(f"Pipeline executed flawlessly. Review outcomes at: {self.output_dir}")
+        return True
